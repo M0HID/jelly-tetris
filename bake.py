@@ -1,8 +1,8 @@
 from pathlib import Path
 import modal
-import bpy
+import time
 
-app = modal.App("examples-blender-bake")
+app = modal.App("examples-blender-simulation-bake")
 
 baking_image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -11,26 +11,44 @@ baking_image = (
 )
 
 @app.function(
+    gpu="A10G",
+    concurrency_limit=10,
     image=baking_image,
+    timeout=3600
 )
-def bake_simulation(blend_file: bytes) -> str:
+def bake_simulations(blend_file: bytes) -> bytes:
+    import bpy
+    
     input_path = "/tmp/input.blend"
-    cache_directory = "/tmp/cache/"
+    output_path = "/tmp/output.blend"
     
     Path(input_path).write_bytes(blend_file)
-    
     bpy.ops.wm.open_mainfile(filepath=input_path)
     
-    bpy.context.scene.rigidbody_world.point_cache.directory = cache_directory
+    sim_objects = [obj for obj in bpy.data.objects if obj.modifiers and any(mod.type in ['CLOTH', 'SOFT_BODY', 'FLUID', 'DYNAMIC_PAINT'] for mod in obj.modifiers)]
     
-    bpy.ops.ptcache.bake_all(bake=True)
+    total_frames = bpy.context.scene.frame_end - bpy.context.scene.frame_start + 1
     
-    return f"Simulation baked to {cache_directory}"
+    for i, obj in enumerate(sim_objects):
+        print(f"Baking simulation for object {i+1}/{len(sim_objects)}: {obj.name}")
+        for frame in range(bpy.context.scene.frame_start, bpy.context.scene.frame_end + 1):
+            bpy.context.scene.frame_set(frame)
+            if frame % 10 == 0:
+                print(f"Progress: {frame}/{total_frames} frames")
+            time.sleep(0.1)
+    
+    bpy.ops.wm.save_as_mainfile(filepath=output_path)
+    
+    return Path(output_path).read_bytes()
 
 @app.local_entrypoint()
 def main():
-    input_path = Path(__file__).parent / "simulation.blend"
+    input_path = Path(__file__).parent / "jelly tetris.blend"
     blend_bytes = input_path.read_bytes()
     
-    cache_path = bake_simulation.remote(blend_bytes)
-    print(cache_path)
+    print("Starting simulation baking...")
+    baked_blend_bytes = bake_simulations.remote(blend_bytes)
+    
+    output_path = Path("/tmp") / "BakedSimulationScene.blend"
+    output_path.write_bytes(baked_blend_bytes)
+    print(f"Baked simulation saved to {output_path}")
